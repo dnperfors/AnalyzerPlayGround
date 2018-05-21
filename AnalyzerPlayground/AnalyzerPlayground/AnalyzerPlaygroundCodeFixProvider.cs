@@ -1,24 +1,22 @@
-using System;
-using System.Collections.Generic;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CodeActions;
+using Microsoft.CodeAnalysis.CodeFixes;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Editing;
+using Microsoft.CodeAnalysis.Operations;
 using System.Collections.Immutable;
 using System.Composition;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
-using Microsoft.CodeAnalysis;
-using Microsoft.CodeAnalysis.CodeFixes;
-using Microsoft.CodeAnalysis.CodeActions;
-using Microsoft.CodeAnalysis.CSharp;
-using Microsoft.CodeAnalysis.CSharp.Syntax;
-using Microsoft.CodeAnalysis.Rename;
-using Microsoft.CodeAnalysis.Text;
 
 namespace AnalyzerPlayground
 {
     [ExportCodeFixProvider(LanguageNames.CSharp, Name = nameof(AnalyzerPlaygroundCodeFixProvider)), Shared]
     public class AnalyzerPlaygroundCodeFixProvider : CodeFixProvider
     {
-        private const string title = "Make uppercase";
+        private const string title = "Replace implicit cast operator";
 
         public sealed override ImmutableArray<string> FixableDiagnosticIds
         {
@@ -35,39 +33,71 @@ namespace AnalyzerPlayground
         {
             var root = await context.Document.GetSyntaxRootAsync(context.CancellationToken).ConfigureAwait(false);
 
-            // TODO: Replace the following code with your own analysis, generating a CodeAction for each fix to suggest
             var diagnostic = context.Diagnostics.First();
             var diagnosticSpan = diagnostic.Location.SourceSpan;
 
             // Find the type declaration identified by the diagnostic.
-            var declaration = root.FindToken(diagnosticSpan.Start).Parent.AncestorsAndSelf().OfType<TypeDeclarationSyntax>().First();
+            var declaration = root.FindNode(diagnosticSpan);
 
             // Register a code action that will invoke the fix.
             context.RegisterCodeFix(
                 CodeAction.Create(
                     title: title,
-                    createChangedSolution: c => MakeUppercaseAsync(context.Document, declaration, c), 
+                    createChangedDocument: c => ReplaceImplicitCastOperatorAsync(context.Document, declaration, c),
                     equivalenceKey: title),
                 diagnostic);
         }
 
-        private async Task<Solution> MakeUppercaseAsync(Document document, TypeDeclarationSyntax typeDecl, CancellationToken cancellationToken)
+        private async Task<Document> ReplaceImplicitCastOperatorAsync(Document document, SyntaxNode syntaxNode, CancellationToken cancellationToken)
         {
             // Compute new uppercase name.
-            var identifierToken = typeDecl.Identifier;
-            var newName = identifierToken.Text.ToUpperInvariant();
-
-            // Get the symbol representing the type to be renamed.
             var semanticModel = await document.GetSemanticModelAsync(cancellationToken);
-            var typeSymbol = semanticModel.GetDeclaredSymbol(typeDecl, cancellationToken);
+            var operation = semanticModel.GetOperation(syntaxNode, cancellationToken);
 
-            // Produce a new solution that has all references to that type renamed, including the declaration.
-            var originalSolution = document.Project.Solution;
-            var optionSet = originalSolution.Workspace.Options;
-            var newSolution = await Renamer.RenameSymbolAsync(document.Project.Solution, typeSymbol, newName, optionSet, cancellationToken).ConfigureAwait(false);
+            while (operation != null && operation.Kind != OperationKind.Conversion)
+            {
+                operation = operation.Parent;
+            }
 
-            // Return the new solution with the now-uppercase type name.
-            return newSolution;
+            if (operation != null)
+            {
+                IConversionOperation conversionOperation = operation as IConversionOperation;
+                var returntype = conversionOperation.OperatorMethod.ReturnType;
+                var constructors = returntype.GetMembers().OfType<IMethodSymbol>().Where(x => x.MethodKind == MethodKind.Constructor && x.Parameters.Length == conversionOperation.OperatorMethod.Parameters.Length);
+                var constructor = constructors.SingleOrDefault(x => x.Parameters.Select(p => p.Type).SequenceEqual(conversionOperation.OperatorMethod.Parameters.Select(p => p.Type)));
+                if (constructor != null)
+                {
+                    // Produce a new solution that has all references to that type renamed, including the declaration.
+                    var originalSolution = document.Project.Solution;
+                    var documentEditor = await DocumentEditor.CreateAsync(document, cancellationToken);
+                    var generator = documentEditor.Generator;
+
+                    var newNode = generator.ObjectCreationExpression(SyntaxFactory.ParseTypeName(conversionOperation.OperatorMethod.ReturnType.ToDisplayString()), conversionOperation.Operand.Syntax);
+                    var root = await document.GetSyntaxRootAsync(cancellationToken);
+                    var newRoot = root.ReplaceNode(syntaxNode, newNode);
+                    return document.WithSyntaxRoot(newRoot);
+                }
+            }
+
+            return document;
+        }
+
+        private class Test
+        {
+            public Test(string _)
+            {
+            }
+
+            public static implicit operator Test(string _) => null;
+        }
+
+        private class Actual
+        {
+            public Actual()
+            {
+                Test test = "Hello";
+                Test test2 = new Test("Hello");
+            }
         }
     }
 }

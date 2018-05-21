@@ -2,68 +2,61 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CodeFixes;
 using Microsoft.CodeAnalysis.Diagnostics;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
-using System;
 using TestHelper;
-using AnalyzerPlayground;
 
 namespace AnalyzerPlayground.Test
 {
     [TestClass]
     public class UnitTest : CodeFixVerifier
     {
-
-        //No diagnostics expected to show up
         [TestMethod]
-        public void TestMethod1()
-        {
-            var test = @"";
-
-            VerifyCSharpDiagnostic(test);
-        }
-
-        //Diagnostic and CodeFix both triggered and checked for
-        [TestMethod]
-        public void TestMethod2()
+        public void TestImplicitCast()
         {
             var test = @"
-    using System;
-    using System.Collections.Generic;
-    using System.Linq;
-    using System.Text;
-    using System.Threading.Tasks;
-    using System.Diagnostics;
-
     namespace ConsoleApplication1
     {
-        class TypeName
-        {   
+        class Test
+        {
+            public Test(string _) { }
+            public static implicit operator Test(string _) => null;
+        }
+
+        class Actual
+        {
+            public Actual()
+            {
+                Test test = ""Hello"";
+            }
         }
     }";
             var expected = new DiagnosticResult
             {
                 Id = "AnalyzerPlayground",
-                Message = String.Format("Type name '{0}' contains lowercase letters", "TypeName"),
+                Message = "Do not use implicit cast operator, use constructor instead.",
                 Severity = DiagnosticSeverity.Warning,
                 Locations =
                     new[] {
-                            new DiagnosticResultLocation("Test0.cs", 11, 15)
+                            new DiagnosticResultLocation("Test0.cs", 14, 29)
                         }
             };
 
             VerifyCSharpDiagnostic(test, expected);
 
             var fixtest = @"
-    using System;
-    using System.Collections.Generic;
-    using System.Linq;
-    using System.Text;
-    using System.Threading.Tasks;
-    using System.Diagnostics;
-
     namespace ConsoleApplication1
     {
-        class TYPENAME
-        {   
+        class Test
+        {
+            public Test(string _) { }
+            public static implicit operator Test(string _) => null;
+        }
+
+        class Actual
+        {
+            public Actual()
+            {
+                Test test = new ConsoleApplication1.Test(""Hello"");
+            }
         }
     }";
             VerifyCSharpFix(test, fixtest);
